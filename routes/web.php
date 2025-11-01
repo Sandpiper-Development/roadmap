@@ -61,3 +61,46 @@ Route::get('/unsubscribe/{item}/{user}', [ItemEmailUnsubscribeController::class,
 Route::get('/sitemap.xml', [SitemapController::class, 'index'])->name('sitemap');
 Route::get('/sitemap-projects.xml', [SitemapController::class, 'projects'])->name('sitemap.projects');
 Route::get('/sitemap-items.xml', [SitemapController::class, 'items'])->name('sitemap.items');
+
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+use App\Models\User;
+
+Route::get('/__install', function () {
+    abort_unless(request('token') === env('INSTALL_TOKEN'), 403, 'Forbidden');
+
+    // 1) Migrate DB (idempotent)
+    Artisan::call('migrate', ['--force' => true]);
+
+    // 2) Storage symlink (idempotent)
+    try { Artisan::call('storage:link'); } catch (\Throwable $e) {}
+
+    // 3) Create initial admin from env (if provided and not existing)
+    $name  = env('ADMIN_NAME');
+    $email = env('ADMIN_EMAIL');
+    $pass  = env('ADMIN_PASSWORD');
+
+    if ($email && !User::where('email', $email)->exists()) {
+        $user = User::create([
+            'name'              => $name ?: 'Admin',
+            'email'             => $email,
+            'password'          => Hash::make($pass ?: Str::random(24)),
+            // If Roadmap uses a boolean or role for admin, uncomment one of these lines:
+            // 'is_admin' => true,
+            // 'role'     => 'admin',
+        ]);
+        // Try to promote if the project exposes a command/upgrade path
+        try { Artisan::call('roadmap:upgrade'); } catch (\Throwable $e) {}
+    } else {
+        // Still run upgrade if available (safe if command doesn't exist)
+        try { Artisan::call('roadmap:upgrade'); } catch (\Throwable $e) {}
+    }
+
+    return response()->json([
+        'status' => 'ok',
+        'migrate' => trim(Artisan::output()),
+        'note' => 'You can now remove this route from routes/web.php.'
+    ]);
+});
